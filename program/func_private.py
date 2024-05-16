@@ -1,157 +1,164 @@
-Voici le code Python modifié avec des commentaires clarifiés, des docstrings ajoutées et des blocs `try-except` pour une gestion des erreurs plus robuste :
+from datetime import datetime, timedelta
+from func_utils import format_number
+import time
+import json
+from pprint import pprint
 
-```python
-import cv2
-import numpy as np
-
-def threshold(pixels, size, value):
+def is_open_positions(client, market):
     """
-    Applique un seuil binaire sur l'image pour segmenter les pixels en deux groupes 
-    selon la valeur fournie.
-
-    Parameters:
-    pixels (np.ndarray): Tableau numpy représentant l'image en niveaux de gris.
-    size (tuple): Taille de l'image (hauteur, largeur).
-    value (int): Valeur de seuil pour la segmentation.
-
+    Check if there are any open positions for the specified market.
+    
+    Args:
+        client: The dYdX client object.
+        market: The market to check for open positions.
+    
     Returns:
-    np.ndarray: Tableau numpy contenant l'image seuillée.
+        bool: True if there are open positions, False otherwise.
     """
     try:
-        binary_pixels = np.zeros(size, dtype=np.uint8)
-        for i in range(size[0]):
-            for j in range(size[1]):
-                binary_pixels[i, j] = 255 if pixels[i, j] >= value else 0
-        return binary_pixels
+        # Protect API
+        time.sleep(0.2)
+        
+        # Get positions
+        all_positions = client.private.get_positions(market=market, status="OPEN")
+        
+        # Determine if open
+        return len(all_positions.data["positions"]) > 0
     except Exception as e:
-        print(f"Erreur dans la fonction threshold: {e}")
+        print(f"Error checking open positions: {e}")
+        return False
+
+def check_order_status(client, order_id):
+    """
+    Check the status of a specific order by its ID.
+    
+    Args:
+        client: The dYdX client object.
+        order_id: The ID of the order to check.
+    
+    Returns:
+        str: The status of the order.
+    """
+    try:
+        order = client.private.get_order_by_id(order_id)
+        if order.data:
+            if "order" in order.data.keys():
+                return order.data["order"]["status"]
+        return "FAILED"
+    except Exception as e:
+        print(f"Error checking order status: {e}")
+        return "FAILED"
+
+def place_market_order(client, market, side, size, price, reduce_only):
+    """
+    Place a market order on the specified market.
+    
+    Args:
+        client: The dYdX client object.
+        market: The market to place the order on.
+        side: The side of the order ('BUY' or 'SELL').
+        size: The size of the order.
+        price: The price of the order.
+        reduce_only: Whether the order is reduce-only.
+    
+    Returns:
+        dict: The placed order data.
+    """
+    try:
+        # Get Position Id
+        account_response = client.private.get_account()
+        position_id = account_response.data["account"]["positionId"]
+        
+        # Get expiration time
+        server_time = client.public.get_time()
+        expiration = datetime.fromisoformat(server_time.data["iso"].replace("Z", "")) + timedelta(seconds=70)
+        
+        # Place an order
+        placed_order = client.private.create_order(
+            position_id=position_id,  # required for creating the order signature
+            market=market,
+            side=side,
+            order_type="MARKET",
+            post_only=False,
+            size=size,
+            price=price,
+            limit_fee='0.015',
+            expiration_epoch_seconds=expiration.timestamp(),
+            time_in_force="FOK",
+            reduce_only=reduce_only
+        )
+        
+        return placed_order.data
+    except Exception as e:
+        print(f"Error placing market order: {e}")
         return None
 
-def region(pixels, label_pixels, label, threshold_size):
+def abort_all_positions(client):
     """
-    Extrait une région de l'image correspondant à une étiquette spécifique.
-
-    Parameters:
-    pixels (np.ndarray): Tableau numpy représentant l'image en niveaux de gris.
-    label_pixels (np.ndarray): Tableau numpy contenant les étiquettes des régions.
-    label (int): Étiquette de la région à extraire.
-    threshold_size (int): Seuil pour filtrer les petites régions.
-
+    Abort all open positions by cancelling all orders and closing open positions.
+    
+    Args:
+        client: The dYdX client object.
+    
     Returns:
-    tuple: Contient l'image extraite de la région, les coordonnées (y, x) de la région et la taille de la région.
+        list: A list of closed orders.
     """
     try:
-        coord = np.where(label_pixels == label)
-        size = len(coord[0])
+        # Cancel all orders
+        client.private.cancel_all_orders()
         
-        # Si la région est trop petite, retournez une région vide
-        if size < threshold_size:
-            return np.array([]), None, 0
+        # Protect API
+        time.sleep(0.5)
         
-        # Trouver les limites de la région
-        min_y, max_y = np.min(coord[0]), np.max(coord[0])
-        min_x, max_x = np.min(coord[1]), np.max(coord[1])
-
-        # Extraire la sous-image de la région
-        region_img = pixels[min_y:max_y+1, min_x:max_x+1]
-        return region_img, (min_y, min_x), size
+        # Get markets for reference of tick size
+        markets = client.public.get_markets().data
+        
+        # Protect API
+        time.sleep(0.5)
+        
+        # Get all open positions
+        positions = client.private.get_positions(status="OPEN")
+        all_positions = positions.data["positions"]
+        
+        # Handle open positions
+        close_orders = []
+        if len(all_positions) > 0:
+            for position in all_positions:
+                # Determine Market
+                market = position["market"]
+                
+                # Determine Side
+                side = "BUY" if position["side"] == "SHORT" else "SELL"
+                
+                # Get Price
+                price = float(position["entryPrice"])
+                accept_price = price * 1.7 if side == "BUY" else price * 0.3
+                tick_size = float(markets["markets"][market]["tickSize"])
+                accept_price = format_number(accept_price, tick_size)
+                
+                # Place order to close
+                order = place_market_order(
+                    client,
+                    market,
+                    side,
+                    position["size"],
+                    accept_price,
+                    True
+                )
+                
+                # Append the result
+                close_orders.append(order)
+                
+                # Protect API
+                time.sleep(0.2)
+            
+            # Override json file with empty list
+            bot_agents = []
+            with open("bot_agents.json", "w") as f:
+                json.dump(bot_agents, f)
+            
+        return close_orders
     except Exception as e:
-        print(f"Erreur dans la fonction region: {e}")
-        return None, None, 0
-
-def connected_components(binary_image):
-    """
-    Trouve les composants connectés dans une image binaire et étiquette chaque composant.
-
-    Parameters:
-    binary_image (np.ndarray): Image binaire (noir et blanc) où les composants sont segmentés.
-
-    Returns:
-    tuple: Contient le nombre de composants et l'image étiquetée.
-    """
-    try:
-        num_labels, labels = cv2.connectedComponents(binary_image, connectivity=8)
-        return num_labels, labels
-    except Exception as e:
-        print(f"Erreur dans la fonction connected_components: {e}")
-        return 0, None
-
-def find_cells(image_path, threshold_value=128, threshold_size=100):
-    """
-    Détecte et extrait les cellules d'une image en niveaux de gris.
-
-    Parameters:
-    image_path (str): Chemin vers l'image d'entrée.
-    threshold_value (int): Valeur de seuil pour la binarisation.
-    threshold_size (int): Taille minimale pour considérer une région comme une cellule.
-
-    Returns:
-    list: Liste de tuples contenant les images des cellules, leurs coordonnées et leurs tailles.
-    """
-    try:
-        # Charger l'image en niveaux de gris
-        pixels = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-        if pixels is None:
-            raise ValueError(f"L'image à {image_path} n'a pas pu être chargée.")
-
-        size = pixels.shape
-
-        # Appliquer le seuil pour binariser l'image
-        binary_pixels = threshold(pixels, size, threshold_value)
-        if binary_pixels is None:
-            raise ValueError("Erreur lors de la binarisation de l'image.")
-
-        # Trouver les composants connectés
-        num_labels, labels = connected_components(binary_pixels)
-        if labels is None:
-            raise ValueError("Erreur lors de la détection des composants connectés.")
-
-        cells = []
-        for label in range(1, num_labels):
-            region_img, coord, region_size = region(pixels, labels, label, threshold_size)
-            if region_size > 0:
-                cells.append((region_img, coord, region_size))
-
-        return cells
-    except Exception as e:
-        print(f"Erreur dans la fonction find_cells: {e}")
+        print(f"Error aborting all positions: {e}")
         return []
 
-def save_cells(cells, output_path_prefix):
-    """
-    Sauvegarde les images des cellules extraites sur le disque.
-
-    Parameters:
-    cells (list): Liste de tuples contenant les images des cellules, leurs coordonnées et leurs tailles.
-    output_path_prefix (str): Préfixe du chemin pour les fichiers de sortie.
-
-    Returns:
-    None
-    """
-    try:
-        for idx, (cell_img, coord, size) in enumerate(cells):
-            output_path = f"{output_path_prefix}_cell_{idx}.png"
-            cv2.imwrite(output_path, cell_img)
-            print(f"Cellule sauvegardée dans {output_path} avec taille {size} et coordonnées {coord}.")
-    except Exception as e:
-        print(f"Erreur dans la fonction save_cells: {e}")
-
-# Exemple d'utilisation des fonctions pour traiter une image et sauvegarder les cellules extraites
-if __name__ == "__main__":
-    input_image_path = "path_to_image.png"  # Chemin de l'image d'entrée
-    output_image_prefix = "output/cell"    # Préfixe du chemin pour les fichiers de sortie
-
-    # Trouver les cellules dans l'image
-    cells = find_cells(input_image_path)
-
-    # Sauvegarder les cellules extraites
-    save_cells(cells, output_image_prefix)
-```
-
-### Modifications et améliorations :
-1. Ajout de `try-except` dans toutes les fonctions pour gérer les exceptions potentielles et afficher des messages d'erreur appropriés.
-2. Ajout de `docstrings` détaillées pour chaque fonction décrivant leurs paramètres, leur fonctionnement et leur retour.
-3. Clarification et amélioration des commentaires existants pour mieux expliquer chaque étape du code.
-4. Vérification de la validité de l'image chargée et des résultats des fonctions pour s'assurer que les étapes subséquentes ne s'exécutent pas avec des données incorrectes.
-
-Ces modifications visent à rendre le code plus robuste, plus lisible et plus maintenable.
