@@ -60,7 +60,7 @@ rlp==2.0.1
 scipy==1.9.3
 six==1.16.0
 statsmodels==0.13.5
-sympy==1.6
+sympy==1.12.0
 toml==0.10.2
 tomli==2.0.1
 toolz==0.12.0
