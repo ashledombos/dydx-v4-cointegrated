@@ -54,7 +54,7 @@ python-decouple==3.6
 pytz==2022.6
 pytz-deprecation-shim==0.1.0.post0
 regex==2022.10.31
-requests==2.28.1
+requests==2.31.0
 requests-mock==1.6.0
 rlp==2.0.1
 scipy==1.9.3
