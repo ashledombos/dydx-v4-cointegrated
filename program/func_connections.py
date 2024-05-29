@@ -1,50 +1,44 @@
 from decouple import config
-from dydx4 import Client  # Assurez-vous d'utiliser la bibliothèque dydx4
-from constants import (
-    HOST,
-    DYDX_API_KEY,
-    DYDX_API_SECRET,
-    DYDX_API_PASSPHRASE,
-)
+from v4_client_py.clients import CompositeClient, Subaccount
+from v4_client_py.clients.constants import Network
+from v4_client_py.chain.aerial.wallet import LocalWallet
+from constants import NETWORK_MODE
 
-def connect_dydx():
+def connect_dydx_v4():
     """
-    Connexion à DYDX et retour du client.
-
-    Crée une connexion client à l'API DYDX en utilisant les informations d'identification fournies. 
-    Affiche et renvoie les informations du compte DYDX si la connexion est réussie.
-
-    Returns:
-        client (Client): Instance du client DYDX connecté.
+    Connects to dYdX V4 using the CompositeClient and fetches account details.
+    
+    Returns a client object that includes all necessary details like account id,
+    balances, and other relevant account information.
     """
+    # Charger le mnemonic depuis le fichier .env
+    mnemonic = config('MNEMONIC')
 
-    try:
-        # Création de la connexion client
-        client = Client(
-            host=HOST,
-            api_key_credentials={
-                "key": DYDX_API_KEY,
-                "secret": DYDX_API_SECRET,
-                "passphrase": DYDX_API_PASSPHRASE,
-            }
-        )
+    # Configurer le réseau
+    if NETWORK_MODE == "mainnet":
+        network = Network.mainnet()
+    else:
+        network = Network.testnet()
 
-        # Confirmation de la connexion du client
-        account = client.private.get_account()
-        account_id = account['account']['id']
-        balance = account['account']['balance']
+    # Créer le portefeuille local
+    wallet = LocalWallet.from_mnemonic(mnemonic)
 
-        print("Connexion réussie")
-        print("ID du compte : ", account_id)
-        print("Solde du compte : ", balance)
+    # Créer le client composite
+    client = CompositeClient(network)
 
-        # Retourne le client connecté
-        return client
+    # Créer un subcompte (par exemple, le premier subcompte)
+    subaccount = Subaccount(wallet, 0)
 
-    except Exception as e:
-        print(f"Erreur lors de la connexion à DYDX : {e}")
-        return None
+    # Récupérer les informations du compte
+    account_info = client.get_account_info(subaccount)
+    
+    # Afficher les informations
+    print("Connection Successful")
+    print(f"Account ID: {account_info['account_id']}")
+    print(f"Quote Balance: {account_info['quote_balance']}")
 
-# Appel de la fonction de connexion pour tester
+    return client
+
+# Appel de la fonction si le script est exécuté directement
 if __name__ == "__main__":
-    connect_dydx()
+    client = connect_dydx_v4()
